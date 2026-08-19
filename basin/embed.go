@@ -11,8 +11,11 @@ import (
 	"fmt"
 	"hash/fnv"
 	"math"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -20,12 +23,12 @@ type Embedder interface {
 	Embed(context.Context, string) ([]float32, error)
 }
 
-// HashEmbedder is a deterministic local fallback. It is intentionally simple
-// and dependency-free: useful for tests and lexical similarity, not a claim of
-// state-of-the-art semantic quality.
-type HashEmbedder struct{ Dims int }
+// LexicalHashEmbedder is a deterministic bag-of-words/character-ngram
+// baseline. It is useful for tests and lexical similarity only; it is not a
+// semantic model.
+type LexicalHashEmbedder struct{ Dims int }
 
-func (h HashEmbedder) Embed(_ context.Context, text string) ([]float32, error) {
+func (h LexicalHashEmbedder) Embed(_ context.Context, text string) ([]float32, error) {
 	if h.Dims <= 0 {
 		return nil, errors.New("dims must be positive")
 	}
@@ -50,12 +53,11 @@ func (h HashEmbedder) Embed(_ context.Context, text string) ([]float32, error) {
 			sign = -1
 		}
 		v[idx] += sign
-		// Character trigrams provide a small amount of morphology robustness.
+
 		rs := []rune(tok)
 		for i := 0; i+2 < len(rs); i++ {
-			tri := string(rs[i : i+3])
 			f.Reset()
-			_, _ = f.Write([]byte("3:" + tri))
+			_, _ = f.Write([]byte("3:" + string(rs[i:i+3])))
 			y := f.Sum64()
 			j := int(y % uint64(h.Dims))
 			sg := float32(0.35)
@@ -65,35 +67,65 @@ func (h HashEmbedder) Embed(_ context.Context, text string) ([]float32, error) {
 			v[j] += sg
 		}
 	}
-	normalize(v)
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if !normalize(v) {
+		return nil, errors.New("text produced an empty lexical vector")
+	}
 	return v, nil
 }
 
-// HTTPEmbedder speaks the common OpenAI-compatible /v1/embeddings shape. It
-// can target a local embedding service and does not require a cloud provider.
-type HTTPEmbedder struct {
+// LoopbackHTTPEmbedder speaks the common OpenAI-compatible /v1/embeddings
+// request shape. It accepts only literal loopback IPs, disables proxy use and
+// rejects redirects so private query text cannot leave the host through normal
+// HTTP client configuration.
+type LoopbackHTTPEmbedder struct {
 	BaseURL string
 	Model   string
 	APIKey  string
-	Client  *http.Client
+	Timeout time.Duration
 }
 
 type embeddingRequest struct {
 	Model string `json:"model"`
 	Input string `json:"input"`
 }
+
 type embeddingResponse struct {
 	Data []struct {
 		Embedding []float32 `json:"embedding"`
 	} `json:"data"`
 }
 
-func (e HTTPEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
+func (e LoopbackHTTPEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
+	if strings.TrimSpace(text) == "" {
+		return nil, errors.New("text must not be empty")
+	}
 	if e.BaseURL == "" || e.Model == "" {
 		return nil, errors.New("base URL and model are required")
 	}
-	body, _ := json.Marshal(embeddingRequest{Model: e.Model, Input: text})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(e.BaseURL, "/")+"/v1/embeddings", bytes.NewReader(body))
+	base, err := url.Parse(e.BaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse base URL: %w", err)
+	}
+	if base.Scheme != "http" {
+		return nil, errors.New("loopback embedding endpoint must use http")
+	}
+	if base.User != nil || base.RawQuery != "" || base.Fragment != "" {
+		return nil, errors.New("embedding base URL must not contain user info, query or fragment")
+	}
+	ip := net.ParseIP(base.Hostname())
+	if ip == nil || !ip.IsLoopback() {
+		return nil, errors.New("embedding endpoint host must be a literal loopback IP")
+	}
+
+	body, err := json.Marshal(embeddingRequest{Model: e.Model, Input: text})
+	if err != nil {
+		return nil, err
+	}
+	endpoint := strings.TrimRight(e.BaseURL, "/") + "/v1/embeddings"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -101,11 +133,21 @@ func (e HTTPEmbedder) Embed(ctx context.Context, text string) ([]float32, error)
 	if e.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+e.APIKey)
 	}
-	c := e.Client
-	if c == nil {
-		c = http.DefaultClient
+
+	timeout := e.Timeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
 	}
-	resp, err := c.Do(req)
+	client := &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			Proxy: nil,
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return errors.New("embedding endpoint redirects are disabled")
+		},
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -120,54 +162,73 @@ func (e HTTPEmbedder) Embed(ctx context.Context, text string) ([]float32, error)
 	if len(out.Data) == 0 || len(out.Data[0].Embedding) == 0 {
 		return nil, errors.New("empty embedding response")
 	}
-	normalize(out.Data[0].Embedding)
+	if !normalize(out.Data[0].Embedding) {
+		return nil, errors.New("embedding response was the zero vector")
+	}
 	return out.Data[0].Embedding, nil
 }
 
-func normalize(v []float32) {
+func normalize(v []float32) bool {
 	var ss float64
 	for _, x := range v {
-		ss += float64(x * x)
+		if math.IsNaN(float64(x)) || math.IsInf(float64(x), 0) {
+			return false
+		}
+		ss += float64(x) * float64(x)
 	}
 	if ss == 0 {
-		return
+		return false
 	}
 	inv := float32(1 / math.Sqrt(ss))
 	for i := range v {
 		v[i] *= inv
 	}
+	return true
 }
 
-// Quantizer maps normalized vectors to a coarse opaque 64-bit basin using
-// deterministic pseudorandom hyperplanes derived from a public epoch seed.
-// Basin IDs are routing hints, not cryptographic secrecy primitives.
+// Quantizer implements a 64-bit random-hyperplane (SimHash-style) signature.
+// Hyperplane coefficients are deterministic standard-normal values derived
+// from Seed, bit index and vector dimension. Basin IDs are similarity metadata,
+// not secrecy primitives.
 type Quantizer struct{ Seed [32]byte }
 
 func (q Quantizer) Basin(v []float32) (uint64, error) {
 	if len(v) == 0 {
 		return 0, errors.New("empty vector")
 	}
+	for _, x := range v {
+		if math.IsNaN(float64(x)) || math.IsInf(float64(x), 0) {
+			return 0, errors.New("vector contains non-finite value")
+		}
+	}
+
 	var id uint64
 	for bit := 0; bit < 64; bit++ {
 		var dot float64
 		for i, x := range v {
-			h := sha256.New()
-			_, _ = h.Write(q.Seed[:])
-			var buf [16]byte
-			binary.BigEndian.PutUint64(buf[:8], uint64(bit))
-			binary.BigEndian.PutUint64(buf[8:], uint64(i))
-			_, _ = h.Write(buf[:])
-			sum := h.Sum(nil)
-			u := binary.BigEndian.Uint64(sum[:8])
-			// Deterministic coefficient in approximately [-1,1].
-			coeff := (float64(u)/float64(^uint64(0)))*2 - 1
-			dot += coeff * float64(x)
+			dot += gaussianCoefficient(q.Seed, uint64(bit), uint64(i)) * float64(x)
 		}
 		if dot >= 0 {
 			id |= 1 << uint(bit)
 		}
 	}
 	return id, nil
+}
+
+func gaussianCoefficient(seed [32]byte, bit, dimension uint64) float64 {
+	h := sha256.New()
+	_, _ = h.Write([]byte("nomad-basin-hyperplane-v1"))
+	_, _ = h.Write(seed[:])
+	var b [16]byte
+	binary.BigEndian.PutUint64(b[:8], bit)
+	binary.BigEndian.PutUint64(b[8:], dimension)
+	_, _ = h.Write(b[:])
+	sum := h.Sum(nil)
+
+	// Convert to open (0,1) intervals before Box-Muller so log(0) is impossible.
+	u1 := (float64(binary.BigEndian.Uint64(sum[:8])) + 0.5) / (float64(^uint64(0)) + 1)
+	u2 := (float64(binary.BigEndian.Uint64(sum[8:16])) + 0.5) / (float64(^uint64(0)) + 1)
+	return math.Sqrt(-2*math.Log(u1)) * math.Cos(2*math.Pi*u2)
 }
 
 func HammingDistance(a, b uint64) int {

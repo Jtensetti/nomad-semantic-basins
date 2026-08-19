@@ -1,26 +1,24 @@
 # nomad-semantic-basins
 
-Working research implementation of Nomad's **semantic basin** layer.
+Local vector-to-basin experiments for Nomad discovery.
 
-It separates human meaning from data transport. A local embedder converts text to a vector; a coarse random-hyperplane quantizer converts that vector to an opaque basin ID suitable for probabilistic routing experiments.
+The repository separates **embedding** from **quantization**. A caller supplies a vector representation; `Quantizer` maps it to a 64-bit random-hyperplane signature. Hamming distance between signatures is a lossy similarity hint, not an identity or confidentiality primitive.
 
-## Implemented
+## Embedders
 
-- `Embedder` interface.
-- Dependency-free deterministic `HashEmbedder` for tests and lexical fallback.
-- `HTTPEmbedder` for any local OpenAI-compatible embedding endpoint.
-- Epoch-seedable 64-bit random-hyperplane basin quantizer.
-- Hamming-distance utility and tests.
+- `LexicalHashEmbedder` is a deterministic word/character-ngram hashing baseline. It is lexical, not semantic, and exists mainly for tests and offline development.
+- `LoopbackHTTPEmbedder` speaks an OpenAI-compatible local embeddings request shape. It accepts only literal loopback IPs over HTTP, disables proxies and rejects redirects. The implementation intentionally does not accept a caller-supplied HTTP client because that would reopen proxy/redirect escape paths for private query text.
 
-## Important limitation
+## Quantizer
 
-A basin ID is **not** a privacy guarantee. Embeddings and coarse semantic buckets can leak meaning. Production privacy would require a reviewed private-retrieval/aggregation design. This repository intentionally does not pretend otherwise.
+`Quantizer` derives deterministic standard-normal hyperplanes from a public seed and takes the sign of each projection (SimHash-style random hyperplane LSH). Tests check exact determinism, the expected complement for opposite vectors, and that angularly close vectors are materially closer than orthogonal vectors across many deterministic seeds.
 
-## Build
+## Privacy caveat
+
+Basin identifiers are metadata, not secrets. Similar inputs are intentionally more likely to have similar signatures. Any network design that exposes basin IDs needs a separate inversion, membership-inference and aggregation-leakage analysis.
 
 ```bash
-go test ./...
 go test -race ./...
 go vet ./...
-go run ./cmd/basin -text 'vapensystem i irans militär'
+go run ./cmd/basin -text 'example text'
 ```
