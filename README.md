@@ -8,6 +8,7 @@ The repository separates **embedding** from **quantization**. A caller supplies 
 
 - `LexicalHashEmbedder` is a deterministic word/character-ngram hashing baseline. It is lexical, not semantic, and exists mainly for tests and offline development.
 - `LoopbackHTTPEmbedder` speaks an OpenAI-compatible local embeddings request shape. It accepts only literal loopback IPs over HTTP, disables proxies and rejects redirects. The implementation intentionally does not accept a caller-supplied HTTP client because that would reopen proxy/redirect escape paths for private query text.
+- Both embedders bound private input length and vector dimensions. The loopback adapter also bounds the complete JSON response before decoding it, rejects multiple vectors and disables HTTP keep-alives.
 
 ## Quantizer
 

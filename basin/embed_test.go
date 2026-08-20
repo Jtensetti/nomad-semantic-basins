@@ -1,6 +1,7 @@
 package basin
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -89,6 +90,21 @@ func TestQuantizerRejectsNonFiniteVector(t *testing.T) {
 	}
 }
 
+func TestEmbeddersRejectOversizedInputsAndDimensions(t *testing.T) {
+	if _, err := (LexicalHashEmbedder{Dims: HardMaxEmbeddingDims + 1}).Embed(context.Background(), "query"); err == nil {
+		t.Fatal("lexical embedder accepted excessive dimensions")
+	}
+	if _, err := (LexicalHashEmbedder{Dims: 8, MaxInputBytes: 4}).Embed(context.Background(), "private query"); err == nil {
+		t.Fatal("lexical embedder accepted oversized input")
+	}
+	e := LoopbackHTTPEmbedder{
+		BaseURL: "http://127.0.0.1:9", Model: "local", MaxInputBytes: 4,
+	}
+	if _, err := e.Embed(context.Background(), "private query"); err == nil {
+		t.Fatal("loopback embedder accepted oversized input")
+	}
+}
+
 func TestLoopbackHTTPEmbedderRejectsRemoteHost(t *testing.T) {
 	e := LoopbackHTTPEmbedder{BaseURL: "http://example.com", Model: "test"}
 	if _, err := e.Embed(context.Background(), "private query"); err == nil {
@@ -134,4 +150,50 @@ func TestLoopbackHTTPEmbedderRequestAndNormalization(t *testing.T) {
 	if len(v) != 2 || math.Abs(float64(v[0]-.6)) > 1e-6 || math.Abs(float64(v[1]-.8)) > 1e-6 {
 		t.Fatalf("unexpected normalized vector: %#v", v)
 	}
+}
+
+func TestLoopbackHTTPEmbedderBoundsResponseAndDimensions(t *testing.T) {
+	t.Run("response bytes", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write(bytes.Repeat([]byte{'x'}, 1024))
+		}))
+		defer server.Close()
+		e := LoopbackHTTPEmbedder{
+			BaseURL: server.URL, Model: "local", MaxResponseBytes: 64,
+		}
+		if _, err := e.Embed(context.Background(), "query"); err == nil {
+			t.Fatal("accepted oversized embedding response")
+		}
+	})
+
+	t.Run("vector dimensions", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{{"embedding": []float32{1, 2, 3}}},
+			})
+		}))
+		defer server.Close()
+		e := LoopbackHTTPEmbedder{
+			BaseURL: server.URL, Model: "local", MaxDimensions: 2,
+		}
+		if _, err := e.Embed(context.Background(), "query"); err == nil {
+			t.Fatal("accepted excessive embedding dimensions")
+		}
+	})
+
+	t.Run("multiple vectors", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{
+					{"embedding": []float32{1, 2}},
+					{"embedding": []float32{3, 4}},
+				},
+			})
+		}))
+		defer server.Close()
+		e := LoopbackHTTPEmbedder{BaseURL: server.URL, Model: "local"}
+		if _, err := e.Embed(context.Background(), "query"); err == nil {
+			t.Fatal("accepted multiple embedding vectors")
+		}
+	})
 }
