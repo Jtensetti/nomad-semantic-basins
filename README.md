@@ -27,6 +27,8 @@ go run ./cmd/nomad-embed-service -key-file service.key -generate-key
 go run ./cmd/nomad-embed-service -key-file service.key -upstream http://127.0.0.1:8080
 ```
 
+`deploy/nomad-embed-service.service` runs the shim under systemd with `IPAddressDeny=any` and `IPAddressAllow=localhost`, so a compromised shim cannot reach off the host even if it stops confining itself. A test pins the directives, because one deleted line is a hole nothing else reports. The unit has **not been exercised against a running system** in this repository: the directives are checked for presence, not by attempting to escape them.
+
 What this does not claim: the service is trusted with the query by construction, so nothing here defends against a service that holds the key and misuses what it sees. `basin.Attest` covers a related but separate question -- whether the model behind it still behaves as it did when it was attested.
 
 ## Quantizer
