@@ -10,10 +10,15 @@
 // including github.com/Jtensetti/nomad-browser/selector, which is the private
 // selection side.
 //
-// Nothing in the Nomad tree constructed this embedder; it is an integration
-// point for a deployment that runs a local model. Keeping it here means a
-// deployment opts into the dependency explicitly, and that basin itself is
-// socket-free by construction rather than by review.
+// Nothing in the Nomad tree constructed the model server; this package is the
+// integration point for a deployment that runs one, and Service is the shim
+// that stands in front of it. Keeping both here means a deployment opts into
+// the dependency explicitly, and that basin itself is socket-free by
+// construction rather than by review.
+//
+// The wire format between HTTPEmbedder and Service is sealed under a shared
+// service key; seal.go explains why the query is encrypted to the service
+// rather than merely gated on proof that the service exists.
 package loopback
 
 import (
@@ -23,23 +28,32 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
 	"github.com/Jtensetti/nomad-semantic-basins/basin"
 )
 
-// HTTPEmbedder speaks the common OpenAI-compatible /v1/embeddings
-// request shape. It accepts only literal loopback IPs, disables proxy use and
-// rejects redirects so private query text cannot leave the host through normal
-// HTTP client configuration.
+// HTTPEmbedder sends a sealed embedding request to a local Service. It accepts
+// only literal loopback IPs, disables proxy use and rejects redirects, so
+// private query text cannot leave the host through normal HTTP client
+// configuration, and it seals the request so that being on the host is not
+// enough to read it.
 type HTTPEmbedder struct {
-	BaseURL          string
-	Model            string
-	APIKey           string
+	BaseURL string
+	Model   string
+
+	// ServiceKey is shared with the embedding service and nothing else. It
+	// authenticates both directions: only its holder can read the query, and
+	// only its holder can produce a vector this client will accept.
+	//
+	// There is no unauthenticated mode. A client that would send the query
+	// anyway when the key is missing is the silent fallback this design
+	// exists to remove, so an absent key is refused rather than treated as
+	// "no authentication required".
+	ServiceKey []byte
+
 	Timeout          time.Duration
 	MaxInputBytes    int
 	MaxDimensions    int
@@ -80,34 +94,29 @@ func (e HTTPEmbedder) Embed(ctx context.Context, text string) ([]float32, error)
 	if e.BaseURL == "" || e.Model == "" {
 		return nil, errors.New("base URL and model are required")
 	}
-	base, err := url.Parse(e.BaseURL)
-	if err != nil {
-		return nil, fmt.Errorf("parse base URL: %w", err)
+	if err := checkServiceKey(e.ServiceKey); err != nil {
+		return nil, err
 	}
-	if base.Scheme != "http" {
-		return nil, errors.New("loopback embedding endpoint must use http")
-	}
-	if base.User != nil || base.RawQuery != "" || base.Fragment != "" {
-		return nil, errors.New("embedding base URL must not contain user info, query or fragment")
-	}
-	ip := net.ParseIP(base.Hostname())
-	if ip == nil || !ip.IsLoopback() {
-		return nil, errors.New("embedding endpoint host must be a literal loopback IP")
+	if err := checkLoopbackBase(e.BaseURL); err != nil {
+		return nil, err
 	}
 
-	body, err := json.Marshal(embeddingRequest{Model: e.Model, Input: trimmed})
+	payload, err := json.Marshal(embeddingRequest{Model: e.Model, Input: trimmed})
 	if err != nil {
 		return nil, err
 	}
-	endpoint := strings.TrimRight(e.BaseURL, "/") + "/v1/embeddings"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	salt, err := newSalt()
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if e.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+e.APIKey)
+	sealed, err := seal(e.ServiceKey, salt, requestInfo, "request", payload)
+	if err != nil {
+		return nil, err
 	}
+	body := make([]byte, 0, 1+len(salt)+len(sealed))
+	body = append(body, sealVersion)
+	body = append(body, salt...)
+	body = append(body, sealed...)
 
 	timeout := e.Timeout
 	if timeout <= 0 {
@@ -123,6 +132,14 @@ func (e HTTPEmbedder) Embed(ctx context.Context, text string) ([]float32, error)
 			return errors.New("embedding endpoint redirects are disabled")
 		},
 	}
+
+	endpoint := strings.TrimRight(e.BaseURL, "/") + SealedPath
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -131,15 +148,23 @@ func (e HTTPEmbedder) Embed(ctx context.Context, text string) ([]float32, error)
 	if resp.StatusCode/100 != 2 {
 		return nil, fmt.Errorf("embedding service returned %s", resp.Status)
 	}
-	payload, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxResponse)+1))
+	sealedResponse, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxResponse)+1))
 	if err != nil {
 		return nil, err
 	}
-	if len(payload) > maxResponse {
+	if len(sealedResponse) > maxResponse {
 		return nil, errors.New("embedding response exceeds maximum size")
 	}
+	// The response opens only under a key derived from this request's salt,
+	// so a vector reaches the caller only if it came from the key holder and
+	// only if it answers this request rather than an earlier one.
+	plaintext, err := unseal(e.ServiceKey, salt, responseInfo, "response", sealedResponse)
+	if err != nil {
+		return nil, fmt.Errorf("%w; the process listening on the embedding endpoint "+
+			"does not hold the service key", err)
+	}
 	var out embeddingResponse
-	if err := json.Unmarshal(payload, &out); err != nil {
+	if err := json.Unmarshal(plaintext, &out); err != nil {
 		return nil, err
 	}
 	if len(out.Data) != 1 || len(out.Data[0].Embedding) == 0 {

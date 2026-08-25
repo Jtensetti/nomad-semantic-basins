@@ -7,8 +7,27 @@ The repository separates **embedding** from **quantization**. A caller supplies 
 ## Embedders
 
 - `LexicalHashEmbedder` is a deterministic word/character-ngram hashing baseline. It is lexical, not semantic, and exists mainly for tests and offline development.
-- `LoopbackHTTPEmbedder` speaks an OpenAI-compatible local embeddings request shape. It accepts only literal loopback IPs over HTTP, disables proxies and rejects redirects. The implementation intentionally does not accept a caller-supplied HTTP client because that would reopen proxy/redirect escape paths for private query text.
-- Both embedders bound private input length and vector dimensions. The loopback adapter also bounds the complete JSON response before decoding it, rejects multiple vectors and disables HTTP keep-alives.
+- `loopback.HTTPEmbedder` talks to a local embedding service. It accepts only literal loopback IPs over HTTP, disables proxies and rejects redirects. It intentionally does not accept a caller-supplied HTTP client, because that would reopen proxy and redirect escape paths for private query text.
+- Both embedders bound private input length and vector dimensions. The loopback adapter also bounds the response before opening it, rejects multiple vectors and disables HTTP keep-alives.
+
+## The embedding service channel
+
+The embedding service is the one component handed a reader's query in the clear. Being on loopback says where the query goes, not who receives it: a process that binds the port first, after a crash or on a shared machine, would otherwise receive every query.
+
+So the channel is sealed under a service key shared by exactly two processes, and there is no unauthenticated mode.
+
+- `loopback.HTTPEmbedder` seals the request to the key and refuses to send anything without one.
+- `loopback.Service` is the shim that holds the other copy, unseals the request, calls the model server over loopback and seals the reply. It never reaches the model server with a request it could not open, and every refusal it returns is the same message, so it cannot be used as an oracle.
+- `cmd/nomad-embed-service` runs that shim. The key lives in a file that must not be readable by any other account; it is never a flag, where the process table would publish it.
+
+Each request draws a fresh 32-byte salt. Both directions derive their own key from it via HKDF-SHA256 and are sealed with AES-256-GCM, so a request key never opens a response and a reply captured once cannot be replayed onto a later request. Plaintext is padded to a multiple of 256 bytes, because AEAD hides content and not length, and the length of a query is information about the query.
+
+```bash
+go run ./cmd/nomad-embed-service -key-file service.key -generate-key
+go run ./cmd/nomad-embed-service -key-file service.key -upstream http://127.0.0.1:8080
+```
+
+What this does not claim: the service is trusted with the query by construction, so nothing here defends against a service that holds the key and misuses what it sees. `basin.Attest` covers a related but separate question -- whether the model behind it still behaves as it did when it was attested.
 
 ## Quantizer
 
