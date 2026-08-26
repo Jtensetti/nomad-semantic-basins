@@ -29,6 +29,8 @@ go run ./cmd/nomad-embed-service -key-file service.key -upstream http://127.0.0.
 
 `deploy/nomad-embed-service.service` runs the shim under systemd with `IPAddressDeny=any` and `IPAddressAllow=localhost`, so a compromised shim cannot reach off the host even if it stops confining itself. A test pins the directives, because one deleted line is a hole nothing else reports. The unit has **not been exercised against a running system** in this repository: the directives are checked for presence, not by attempting to escape them.
 
+What *is* exercised is the chain itself. `basin/loopback/egress_test.go` runs the client, the shim and a model server inside a network namespace whose only interface is loopback -- off-host is not blocked there, it is absent -- and the embedding still completes. A packet capture inside that namespace records every datagram the chain produced and requires all of them to name loopback at both ends. The namespace shows nothing *could* leave; the capture shows nothing did. The addresses are parsed rather than substring-matched, because `::1` is a substring of `2001:db8::1` and a check that missed that would pass on exactly the packets it exists to catch.
+
 What this does not claim: the service is trusted with the query by construction, so nothing here defends against a service that holds the key and misuses what it sees. `basin.Attest` covers a related but separate question -- whether the model behind it still behaves as it did when it was attested.
 
 ## Quantizer
