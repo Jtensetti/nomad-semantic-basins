@@ -38,6 +38,64 @@ import (
 
 const egressChildMarker = "NOMAD_EGRESS_NAMESPACE_CHILD"
 
+// namespaceMechanism is a way to obtain a network namespace with no route off
+// the host. They differ only in how the namespace is obtained, never in what it
+// proves: either way the child lands somewhere with no interface but loopback.
+type namespaceMechanism struct {
+	name string
+	argv []string
+}
+
+// Least privilege first.
+//
+// Only the first of these worked when this test was written, and it is the one
+// that does not work on CI: Ubuntu 24.04 restricts unprivileged user namespaces
+// through AppArmor, so on GitHub's runners -- non-root, with passwordless sudo
+// -- every mechanism here failed and the test skipped. It said so, honestly,
+// and a skip is still green, so PROD-24's capture was not being produced by any
+// run that gated anything.
+var namespaceMechanisms = []namespaceMechanism{
+	{"userns", []string{"unshare", "--user", "--map-root-user", "--net"}},
+	{"root", []string{"unshare", "--net"}},
+	// -E because the child is selected through the environment, and sudo
+	// clears it otherwise.
+	{"sudo", []string{"sudo", "-n", "-E", "unshare", "--net"}},
+}
+
+// namespaceRunner returns the argv prefix that puts a command in an empty
+// network namespace, or nil when this host offers no way to do it.
+//
+// Each candidate is probed by running true through it, so the choice is made on
+// what works here rather than on what ought to.
+func namespaceRunner() (namespaceMechanism, bool) {
+	for _, mechanism := range namespaceMechanisms {
+		if forced := os.Getenv("NOMAD_NETNS_KIND"); forced != "" && forced != mechanism.name {
+			continue
+		}
+		if _, err := exec.LookPath(mechanism.argv[0]); err != nil {
+			continue
+		}
+		probe := exec.Command(mechanism.argv[0], append(append([]string{}, mechanism.argv[1:]...), "true")...)
+		if probe.Run() == nil {
+			return mechanism, true
+		}
+	}
+	return namespaceMechanism{}, false
+}
+
+// inNamespace builds the command that re-runs this test binary as the child,
+// inside the namespace.
+func inNamespace(mechanism namespaceMechanism, run string) *exec.Cmd {
+	argv := append(append([]string{}, mechanism.argv[1:]...),
+		os.Args[0], "-test.run", run, "-test.v")
+	return exec.Command(mechanism.argv[0], argv...)
+}
+
+const noNamespaceSkip = "no way to obtain a network namespace on this host: " +
+	"unprivileged user namespaces are unavailable, this process is not root, " +
+	"and passwordless sudo is not available either. An environment limit and " +
+	"not a pass."
+
 // interfaceRequest is the ifreq a SIOCGIFFLAGS/SIOCSIFFLAGS ioctl takes.
 type interfaceRequest struct {
 	name  [16]byte
@@ -165,22 +223,18 @@ func TestTheEmbeddingChainNeedsNothingButLoopback(t *testing.T) {
 		return
 	}
 
-	unshare, err := exec.LookPath("unshare")
-	if err != nil {
-		t.Skip("unshare is unavailable, so a loopback-only namespace cannot be built; " +
-			"this is an environment limit and not a pass")
+	mechanism, available := namespaceRunner()
+	if !available {
+		t.Skip(noNamespaceSkip)
 	}
-	command := exec.Command(unshare, "--net", os.Args[0],
-		"-test.run", "^TestTheEmbeddingChainNeedsNothingButLoopback$", "-test.v")
+	command := inNamespace(mechanism, "^TestTheEmbeddingChainNeedsNothingButLoopback$")
 	command.Env = append(os.Environ(), egressChildMarker+"=1")
 	output, err := command.CombinedOutput()
 	if err != nil {
-		if strings.Contains(string(output), "Operation not permitted") ||
-			strings.Contains(err.Error(), "operation not permitted") {
-			t.Skipf("this environment does not permit a network namespace; an "+
-				"environment limit and not a pass:\n%s", output)
-		}
-		t.Fatalf("the embedding chain failed with only loopback available:\n%s", output)
+		// The mechanism was probed before it was used, so a permission failure
+		// here is a failure rather than an environment this test can skip.
+		t.Fatalf("the embedding chain failed with only loopback available "+
+			"(%s namespace):\n%s", mechanism.name, output)
 	}
 	if !strings.Contains(string(output), "PASS") {
 		t.Fatalf("the child did not report a pass:\n%s", output)
@@ -226,24 +280,20 @@ func TestNothingTheEmbeddingChainEmitsLeavesLoopback(t *testing.T) {
 		return
 	}
 
-	unshare, err := exec.LookPath("unshare")
-	if err != nil {
-		t.Skip("unshare is unavailable; an environment limit and not a pass")
+	mechanism, available := namespaceRunner()
+	if !available {
+		t.Skip(noNamespaceSkip)
 	}
 	if _, err := exec.LookPath("tcpdump"); err != nil {
 		t.Skip("tcpdump is unavailable; an environment limit and not a pass")
 	}
 	capturePath := t.TempDir() + "/egress.pcap"
 
-	command := exec.Command(unshare, "--net", os.Args[0],
-		"-test.run", "^TestNothingTheEmbeddingChainEmitsLeavesLoopback$", "-test.v")
+	command := inNamespace(mechanism, "^TestNothingTheEmbeddingChainEmitsLeavesLoopback$")
 	command.Env = append(os.Environ(), egressChildMarker+"=1", "NOMAD_EGRESS_CAPTURE="+capturePath)
 	output, err := command.CombinedOutput()
 	if err != nil {
-		if strings.Contains(string(output), "Operation not permitted") {
-			t.Skipf("this environment does not permit a network namespace:\n%s", output)
-		}
-		t.Fatalf("the captured run failed:\n%s", output)
+		t.Fatalf("the captured run failed (%s namespace):\n%s", mechanism.name, output)
 	}
 	if strings.Contains(string(output), "SKIP") {
 		t.Skipf("the child skipped:\n%s", output)
