@@ -96,6 +96,29 @@ const noNamespaceSkip = "no way to obtain a network namespace on this host: " +
 	"and passwordless sudo is not available either. An environment limit and " +
 	"not a pass."
 
+// requireCapabilityGates reports whether this environment has declared that the
+// gates depending on an external tool or a kernel capability can run here.
+//
+// CI sets it. A skip is green, so a gate that quietly stopped running -- an
+// image that no longer ships tcpdump, an OS release that started restricting
+// unprivileged user namespaces, which is exactly what happened to this test --
+// is indistinguishable from a gate that passed. Where the environment has
+// promised the capability, its absence is a failure.
+func requireCapabilityGates() bool {
+	return os.Getenv("NOMAD_REQUIRE_CAPABILITY_GATES") == "1"
+}
+
+// skipOrFail skips when the capability is genuinely missing, and fails when the
+// environment said it would be there.
+func skipOrFail(t *testing.T, reason string) {
+	t.Helper()
+	if requireCapabilityGates() {
+		t.Fatalf("%s -- and NOMAD_REQUIRE_CAPABILITY_GATES=1 says this environment is "+
+			"supposed to run this gate, so skipping would report what passing reports", reason)
+	}
+	t.Skip(reason)
+}
+
 // interfaceRequest is the ifreq a SIOCGIFFLAGS/SIOCSIFFLAGS ioctl takes.
 type interfaceRequest struct {
 	name  [16]byte
@@ -225,7 +248,7 @@ func TestTheEmbeddingChainNeedsNothingButLoopback(t *testing.T) {
 
 	mechanism, available := namespaceRunner()
 	if !available {
-		t.Skip(noNamespaceSkip)
+		skipOrFail(t, noNamespaceSkip)
 	}
 	command := inNamespace(mechanism, "^TestTheEmbeddingChainNeedsNothingButLoopback$")
 	command.Env = append(os.Environ(), egressChildMarker+"=1")
@@ -256,7 +279,7 @@ func TestNothingTheEmbeddingChainEmitsLeavesLoopback(t *testing.T) {
 		}
 		tcpdump, err := exec.LookPath("tcpdump")
 		if err != nil {
-			t.Skip("tcpdump is unavailable inside the namespace")
+			skipOrFail(t, "tcpdump is unavailable inside the namespace")
 		}
 		// -U writes each packet as it arrives. Without it tcpdump buffers,
 		// and a buffer that is still unwritten when the process ends leaves
@@ -282,10 +305,10 @@ func TestNothingTheEmbeddingChainEmitsLeavesLoopback(t *testing.T) {
 
 	mechanism, available := namespaceRunner()
 	if !available {
-		t.Skip(noNamespaceSkip)
+		skipOrFail(t, noNamespaceSkip)
 	}
 	if _, err := exec.LookPath("tcpdump"); err != nil {
-		t.Skip("tcpdump is unavailable; an environment limit and not a pass")
+		skipOrFail(t, "tcpdump is unavailable; an environment limit and not a pass")
 	}
 	capturePath := t.TempDir() + "/egress.pcap"
 
