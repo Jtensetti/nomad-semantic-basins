@@ -57,3 +57,28 @@ func TestTheLoopbackEmbedderIsWhereTheNetworkDependencyLives(t *testing.T) {
 			"is not there, and basin may have kept the dependency")
 	}
 }
+
+// basin/model composes a manifest, an adapter and a runtime. The runtime is
+// supplied by a model pack, and a pack that speaks to a local model server over
+// loopback brings a socket with it -- but it brings it to the pack, not here.
+//
+// The distinction matters because model is reachable from the browser core: the
+// search side has to know a model's fingerprint to pick an index. If model
+// linked a network stack, so would every binary that reads a query, and the
+// browser's central claim would be false again in exactly the way it was
+// before basin/loopback existed.
+func TestTheModelPackageCannotReachASocketEither(t *testing.T) {
+	out, err := exec.Command("go", "list", "-deps",
+		"github.com/Jtensetti/nomad-semantic-basins/basin/model").Output()
+	if err != nil {
+		t.Fatalf("go list: %v", err)
+	}
+	for _, forbidden := range []string{"net", "net/http", "net/url", "crypto/tls", "os/exec"} {
+		for _, dependency := range strings.Split(string(out), "\n") {
+			if strings.TrimSpace(dependency) == forbidden {
+				t.Fatalf("basin/model links %s; a model pack may open a socket, the "+
+					"package that describes models may not", forbidden)
+			}
+		}
+	}
+}
