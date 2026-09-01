@@ -285,7 +285,15 @@ func TestNothingTheEmbeddingChainEmitsLeavesLoopback(t *testing.T) {
 		// and a buffer that is still unwritten when the process ends leaves
 		// a truncated file that reads as "nothing was captured" -- which is
 		// indistinguishable from the result this test exists to report.
-		capture := exec.Command(tcpdump, "-i", "any", "-n", "-U", "-w", capturePath)
+		// -Z root keeps tcpdump from dropping to the unprivileged tcpdump
+		// user. Inside a user namespace that drop costs it the ability to
+		// capture and it records nothing while exiting successfully: measured
+		// as 24 packets with the flag and 0 without it, for identical traffic.
+		// Under the sudo mechanism it runs as real root and captures either
+		// way, which is why CI never showed this and a developer machine --
+		// where the user namespace is the mechanism that works -- would have
+		// hit "the capture is empty" and read it as the chain emitting nothing.
+		capture := exec.Command(tcpdump, "-i", "any", "-n", "-U", "-Z", "root", "-w", capturePath)
 		if err := capture.Start(); err != nil {
 			t.Fatalf("start capture: %v", err)
 		}
@@ -323,14 +331,19 @@ func TestNothingTheEmbeddingChainEmitsLeavesLoopback(t *testing.T) {
 	}
 
 	read := exec.Command("tcpdump", "-r", capturePath, "-nn", "-q")
-	packets, err := read.CombinedOutput()
+	// Standard output only. tcpdump writes "reading from file ..." and its
+	// warnings to standard error, and a warning counted as a packet would make
+	// an empty capture look like one packet -- passing the emptiness check
+	// below and then being reported as a non-loopback packet, which is a
+	// confusing way to say the capture did not work.
+	packets, err := read.Output()
 	if err != nil {
-		t.Fatalf("read capture: %v\n%s", err, packets)
+		t.Fatalf("read capture: %v", err)
 	}
 	lines := 0
 	for _, line := range strings.Split(string(packets), "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "reading from file") {
+		if line == "" {
 			continue
 		}
 		lines++
