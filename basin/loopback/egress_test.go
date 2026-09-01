@@ -5,7 +5,9 @@ package loopback
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -156,6 +158,39 @@ func bringLoopbackUp() error {
 	return nil
 }
 
+// waitUntilCapturing makes loopback traffic until the capture file grows past
+// its header, so the measurement begins only once the instrument is recording.
+func waitUntilCapturing(capturePath string) error {
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return fmt.Errorf("canary listener: %w", err)
+		}
+		go func() {
+			connection, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			_, _ = connection.Write([]byte("canary"))
+			_ = connection.Close()
+		}()
+		connection, err := net.DialTimeout("tcp", listener.Addr().String(), 2*time.Second)
+		if err == nil {
+			_, _ = io.ReadAll(connection)
+			_ = connection.Close()
+		}
+		_ = listener.Close()
+
+		// A pcap file with no packets is its 24-byte header alone.
+		if info, err := os.Stat(capturePath); err == nil && info.Size() > 24 {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return errors.New("no canary packet reached the capture within 30s")
+}
+
 // loopbackOnly reports whether a tcpdump line names only loopback addresses,
 // and returns what it found otherwise.
 //
@@ -297,9 +332,23 @@ func TestNothingTheEmbeddingChainEmitsLeavesLoopback(t *testing.T) {
 		if err := capture.Start(); err != nil {
 			t.Fatalf("start capture: %v", err)
 		}
-		// tcpdump needs a moment to attach before the chain runs, or the
-		// capture is of nothing and the test passes for want of traffic.
-		time.Sleep(1500 * time.Millisecond)
+		// Wait until the capture demonstrably records something, rather than
+		// sleeping and hoping it attached.
+		//
+		// A fixed sleep raced the attach: the same traffic produced 32 packets
+		// or none depending on the run, and tcpdump's own summary said "48
+		// packets received by filter, 0 packets captured" -- it saw the frames
+		// and wrote none. Waiting for its "listening on" line did not fix it
+		// either. Every one of those empty captures is indistinguishable from
+		// the result this test exists to report, so the instrument has to prove
+		// it is working before the measurement starts.
+		//
+		// The canary is loopback traffic, which is what the assertion below
+		// permits, so proving the capture works does not contaminate it.
+		if err := waitUntilCapturing(capturePath); err != nil {
+			t.Fatalf("the capture never recorded a canary packet, so it is not "+
+				"measuring and an empty result would mean nothing: %v", err)
+		}
 		vector := runChain(t)
 		time.Sleep(500 * time.Millisecond)
 		// SIGTERM rather than SIGKILL, so it closes the file it is writing.
