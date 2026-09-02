@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -65,10 +66,6 @@ func LoadPack(directory string) (Pack, error) {
 
 	weights := filepath.Join(directory, "weights."+string(manifest.Runtime))
 	if _, err := os.Stat(weights); err != nil {
-		// A pack may name the file differently; fall back to the single
-		// regular file matching the weights digest is *not* done here, because
-		// searching a directory for a file that hashes correctly is how a pack
-		// ends up loading something nobody meant to ship.
 		return Pack{}, fmt.Errorf("%s: no weights file at %s: %w", directory, weights, err)
 	}
 	tokenizer := filepath.Join(directory, "tokenizer.json")
@@ -241,14 +238,10 @@ func (r *Registry) ByFingerprint(fingerprint string) (Pack, bool) {
 }
 
 func sortPacks(packs []Pack) {
-	for i := 1; i < len(packs); i++ {
-		for j := i; j > 0; j-- {
-			left, right := packs[j-1], packs[j]
-			if left.Manifest.ID < right.Manifest.ID ||
-				(left.Manifest.ID == right.Manifest.ID && left.Fingerprint() <= right.Fingerprint()) {
-				break
-			}
-			packs[j-1], packs[j] = right, left
+	sort.Slice(packs, func(a, b int) bool {
+		if packs[a].Manifest.ID != packs[b].Manifest.ID {
+			return packs[a].Manifest.ID < packs[b].Manifest.ID
 		}
-	}
+		return packs[a].Fingerprint() < packs[b].Fingerprint()
+	})
 }

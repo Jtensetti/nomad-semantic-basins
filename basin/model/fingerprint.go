@@ -68,9 +68,7 @@ func (m Manifest) canonical() []byte {
 }
 
 func appendUint64(out []byte, value uint64) []byte {
-	var buffer [8]byte
-	binary.BigEndian.PutUint64(buffer[:], value)
-	return append(out, buffer[:]...)
+	return binary.BigEndian.AppendUint64(out, value)
 }
 
 func appendBytes(out, value []byte) []byte {
@@ -88,11 +86,3 @@ func appendBool(out []byte, value bool) []byte {
 	}
 	return append(out, 0)
 }
-
-// IndexDirectory is the subdirectory an index built with this model belongs in.
-//
-// Embeddings from different models are not comparable, so they do not share a
-// directory. Keeping them separate rather than overwriting also means switching
-// models is reversible: the previous index is still there, still valid, and
-// still current if nothing was published in between.
-func (m Manifest) IndexDirectory() string { return m.Fingerprint() }

@@ -263,24 +263,6 @@ func TestAnEmbedderCannotBeBuiltWithoutABudget(t *testing.T) {
 	}
 }
 
-// The two basin.Embedder views must stay distinct, or a document embedded
-// through the query side would be indexed under the wrong conventions.
-func TestTheTwoEmbedderViewsDoNotCollapse(t *testing.T) {
-	runtime := &fixedRuntime{width: 768}
-	embedder := gemmaEmbedder(t, runtime)
-	ctx := context.Background()
-
-	if _, err := embedder.QueryEmbedder().Embed(ctx, "nomad"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := embedder.DocumentEmbedder().Embed(ctx, "nomad"); err != nil {
-		t.Fatal(err)
-	}
-	if runtime.calls[0] == runtime.calls[1] {
-		t.Fatal("the query view and the document view sent identical text")
-	}
-}
-
 // Empty text has no embedding, and a runtime should never be asked for one.
 func TestEmptyTextIsRefusedBeforeTheRuntime(t *testing.T) {
 	runtime := &fixedRuntime{width: 768}

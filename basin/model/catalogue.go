@@ -49,10 +49,7 @@ type CatalogueEntry struct {
 	NoticeRequired bool
 	Source         string
 
-	Availability          Availability
-	ApproximateDiskBytes  int64
-	ApproximateResidentKB int64
-	Languages             int
+	Availability Availability
 }
 
 // Catalogue is the set of models this build knows how to offer.
@@ -86,10 +83,7 @@ func Catalogue() []CatalogueEntry {
 			NoticeRequired: true,
 			Source:         "https://huggingface.co/google/embeddinggemma-300m",
 
-			Availability:          Bundled,
-			ApproximateDiskBytes:  200 << 20,
-			ApproximateResidentKB: 200 << 10,
-			Languages:             100,
+			Availability: Bundled,
 		},
 		{
 			ID:      "multilingual-e5-small",
@@ -110,10 +104,7 @@ func Catalogue() []CatalogueEntry {
 			NoticeRequired: false,
 			Source:         "https://huggingface.co/intfloat/multilingual-e5-small",
 
-			Availability:          Downloadable,
-			ApproximateDiskBytes:  113 << 20,
-			ApproximateResidentKB: 150 << 10,
-			Languages:             94,
+			Availability: Downloadable,
 		},
 		{
 			ID:      "qwen3-embedding-0.6b",
@@ -134,42 +125,7 @@ func Catalogue() []CatalogueEntry {
 			NoticeRequired: true,
 			Source:         "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B",
 
-			Availability:          Downloadable,
-			ApproximateDiskBytes:  640 << 20,
-			ApproximateResidentKB: 700 << 10,
-			Languages:             100,
-		},
-	}
-}
-
-// Draft turns a catalogue entry into the manifest fields that do not depend on
-// the files, leaving the digests and size empty.
-//
-// The result does not validate, and that is the point: a caller has to supply
-// what it measured before anything will load. There is no path from a
-// catalogue entry to a usable model that does not pass through real digests.
-func (e CatalogueEntry) Draft() Manifest {
-	return Manifest{
-		Schema:            SchemaVersion,
-		ID:                e.ID,
-		Version:           "unset",
-		Revision:          0,
-		Runtime:           e.Runtime,
-		Quantization:      "unset",
-		Adapter:           e.Adapter,
-		AdapterVersion:    e.AdapterVersion,
-		Dimensions:        e.RecommendedDimensions,
-		NativeDimensions:  e.NativeDimensions,
-		SupportedDims:     append([]int(nil), e.SupportedDims...),
-		Normalize:         e.Normalize,
-		MaxInputTokens:    e.MaxInputTokens,
-		InferenceSettings: map[string]string{},
-		License:           e.License,
-		NoticeRequired:    e.NoticeRequired,
-		Source:            e.Source,
-		Requirements: Requirements{
-			MinimumRAMBytes: e.ApproximateResidentKB << 10,
-			Threads:         2,
+			Availability: Downloadable,
 		},
 	}
 }

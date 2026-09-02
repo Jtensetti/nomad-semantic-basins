@@ -178,10 +178,8 @@ func TestOneNameCanCoverTwoIncomparableModels(t *testing.T) {
 		t.Fatal("the fixtures no longer share an id, so this proves nothing")
 	}
 	if first.Fingerprint() == second.Fingerprint() {
-		t.Fatal("two different sets of weights under one id share a fingerprint")
-	}
-	if first.IndexDirectory() == second.IndexDirectory() {
-		t.Fatal("two incomparable models would write into one index directory")
+		t.Fatal("two different sets of weights under one id share a fingerprint, so " +
+			"their embeddings would be compared with each other")
 	}
 }
 

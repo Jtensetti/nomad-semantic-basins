@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -253,25 +255,43 @@ func TestAMissingRegistryRootIsAnErrorNotAnEmptyRegistry(t *testing.T) {
 	}
 }
 
-// The catalogue describes models; it does not pretend to know their digests.
-// A draft must not validate, so there is no path from a catalogue entry to a
-// loadable model that skips measuring the files that actually shipped.
-func TestACatalogueDraftCannotBeUsedWithoutRealDigests(t *testing.T) {
+// The catalogue describes models; it carries nothing it has not been told.
+//
+// It has no digest, size or memory fields, and no method that turns an entry
+// into a manifest. Writing plausible digests for weights nobody measured would
+// give a registry that verifies packs against invented numbers, which is worse
+// than no verification because it looks verified -- and an approximate size is
+// the same claim in a smaller font. A pack builder measures the files it
+// shipped and writes the manifest from those.
+func TestTheCatalogueOffersTheThreeModelsAndAssertsNothingUnmeasured(t *testing.T) {
 	entries := Catalogue()
 	if len(entries) != 3 {
 		t.Fatalf("the catalogue offers %d models, want the three recommended", len(entries))
 	}
+	fields := map[string]bool{}
+	structType := reflect.TypeOf(CatalogueEntry{})
+	for index := 0; index < structType.NumField(); index++ {
+		fields[structType.Field(index).Name] = true
+	}
+	for _, unmeasured := range []string{
+		"WeightsSHA256", "TokenizerSHA256", "WeightsBytes",
+		"ApproximateDiskBytes", "ApproximateResidentKB",
+	} {
+		if fields[unmeasured] {
+			t.Errorf("CatalogueEntry carries %s, a value this build cannot have "+
+				"measured; a pack builder supplies it from the files that shipped",
+				unmeasured)
+		}
+	}
 	for _, entry := range entries {
 		t.Run(entry.ID, func(t *testing.T) {
-			draft := entry.Draft()
-			if err := draft.Validate(); err == nil {
-				t.Fatal("a catalogue draft validated without any digests, so a pack " +
-					"could be registered against numbers nobody measured")
-			}
-			if _, err := BuiltinAdapter(draft); err != nil {
+			if _, err := BuiltinAdapter(Manifest{
+				Adapter:           entry.Adapter,
+				InferenceSettings: map[string]string{},
+			}); err != nil {
 				t.Fatalf("the catalogue names an adapter this build does not have: %v", err)
 			}
-			if !containsInt(entry.SupportedDims, entry.RecommendedDimensions) {
+			if !slices.Contains(entry.SupportedDims, entry.RecommendedDimensions) {
 				t.Fatalf("recommended width %d is not among the supported %v",
 					entry.RecommendedDimensions, entry.SupportedDims)
 			}

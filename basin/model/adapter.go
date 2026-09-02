@@ -250,23 +250,3 @@ func (s *SemanticEmbedder) embed(ctx context.Context, prompted, original string)
 	}
 	return vector, nil
 }
-
-// QueryEmbedder and DocumentEmbedder adapt this to basin.Embedder, whose single
-// Embed method cannot express the distinction.
-//
-// They are separate named methods rather than one Embed, so that a caller
-// handing a document to the query side has to write it down.
-func (s *SemanticEmbedder) QueryEmbedder() basin.Embedder    { return queryside{s} }
-func (s *SemanticEmbedder) DocumentEmbedder() basin.Embedder { return documentside{s} }
-
-type queryside struct{ inner *SemanticEmbedder }
-
-func (q queryside) Embed(ctx context.Context, text string) ([]float32, error) {
-	return q.inner.EmbedQuery(ctx, text)
-}
-
-type documentside struct{ inner *SemanticEmbedder }
-
-func (d documentside) Embed(ctx context.Context, text string) ([]float32, error) {
-	return d.inner.EmbedDocument(ctx, text)
-}

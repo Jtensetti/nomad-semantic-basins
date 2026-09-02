@@ -17,6 +17,7 @@ package model
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -165,14 +166,14 @@ func (m Manifest) Validate() error {
 		return fmt.Errorf("manifest lists %d supported dimensions, at most %d",
 			len(m.SupportedDims), MaxSupportedDims)
 	}
-	if !containsInt(m.SupportedDims, m.Dimensions) {
+	if !slices.Contains(m.SupportedDims, m.Dimensions) {
 		// Truncating to a width the model was not trained to truncate to
 		// produces vectors that still look like vectors and rank badly, which
 		// is the kind of failure nobody reports as a bug.
 		return fmt.Errorf("configured dimensions %d are not among the supported %v",
 			m.Dimensions, m.SupportedDims)
 	}
-	if !containsInt(m.SupportedDims, m.NativeDimensions) {
+	if !slices.Contains(m.SupportedDims, m.NativeDimensions) {
 		return fmt.Errorf("native dimensions %d are not among the supported %v",
 			m.NativeDimensions, m.SupportedDims)
 	}
@@ -250,15 +251,6 @@ func validDigest(name, value string) error {
 		}
 	}
 	return nil
-}
-
-func containsInt(values []int, want int) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }
 
 func sortedKeys(m map[string]string) []string {
