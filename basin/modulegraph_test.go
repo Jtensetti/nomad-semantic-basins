@@ -69,7 +69,7 @@ func TestTheModuleGraphHasNoThirdPartyCode(t *testing.T) {
 // The fixture requires a second module and replaces it with a local directory,
 // so it resolves under GOPROXY=off. The first version named a real dependency
 // and skipped when the module cache could not resolve it -- which made the
-// control disappear in exactly the environments where nobody was watching.
+// control disappear in exactly the environments that need it.
 func TestTheThirdPartyScanReportsWhatIsThere(t *testing.T) {
 	directory := t.TempDir()
 	if err := os.Mkdir(filepath.Join(directory, "dep"), 0o700); err != nil {

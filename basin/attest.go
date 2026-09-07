@@ -19,7 +19,7 @@ import (
 // the reader simply starts pulling a different part of the catalogue than
 // everyone still on the old model.
 //
-// PROD-24 asks for "reproducible model identity". This file supplies the
+// What is needed is "reproducible model identity". This file supplies the
 // reproducible half and is careful about the rest.
 //
 // It cannot establish *authenticity*. The embedding service is a separate

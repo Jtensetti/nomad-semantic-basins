@@ -20,7 +20,7 @@ import (
 	"unsafe"
 )
 
-// PROD-24 asks for attempted-egress capture: not a promise that the embedding
+// What is needed is attempted-egress capture: not a promise that the embedding
 // service stays on the host, and not a systemd file whose directives are read
 // rather than exercised, but a measurement of what the chain actually emits.
 //
@@ -54,7 +54,7 @@ type namespaceMechanism struct {
 // that does not work on CI: Ubuntu 24.04 restricts unprivileged user namespaces
 // through AppArmor, so on GitHub's runners -- non-root, with passwordless sudo
 // -- every mechanism here failed and the test skipped. It said so, honestly,
-// and a skip is still green, so PROD-24's capture was not being produced by any
+// and a skip is still green, so the capture was not being produced by any
 // run that gated anything.
 var namespaceMechanisms = []namespaceMechanism{
 	{"userns", []string{"unshare", "--user", "--map-root-user", "--net"}},
